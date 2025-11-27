@@ -1,0 +1,8 @@
+# -*- makefile -*-
+
+# Include all test definitions
+-include tests/userprog/Make.tests
+-include tests/userprog/dup2/Make.tests
+-include tests/filesys/base/Make.tests
+-include tests/threads/Make.tests
+-include tests/userprog/no-vm/Make.tests
