@@ -81,9 +81,9 @@ struct page_operations {
 #define destroy(page) \
 	if ((page)->operations->destroy) (page)->operations->destroy (page)
 
-/* 현재 프로세스의 메모리 공간을 표현합니다.
- * 이 구조체의 구체적인 설계는 강제하지 않습니다.
- * 어떤 설계를 사용해도 괜찮습니다. */
+/* Representation of current process's memory space.
+ * We don't want to force you to obey any specific design for this struct.
+ * All designs up to you for this. */
 struct supplemental_page_table {
 };
 

@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "intrinsic.h"
@@ -83,11 +84,9 @@ kill (struct intr_frame *f) {
 		case SEL_UCSEG:
 			/* User's code segment, so it's a user exception, as we
 			   expected.  Kill the user process.  */
-			/* intr_dump_frame은 테스트 출력을 방해하므로 주석 처리 */
-			/* printf ("%s: dying due to interrupt %#04llx (%s).\\n",
+			printf ("%s: dying due to interrupt %#04llx (%s).\n",
 					thread_name (), f->vec_no, intr_name (f->vec_no));
-			intr_dump_frame (f); */
-			thread_current()->exit_status = -1;
+			intr_dump_frame (f);
 			thread_exit ();
 
 		case SEL_KCSEG:
@@ -151,13 +150,24 @@ page_fault (struct intr_frame *f) {
 	/* Count page faults. */
 	page_fault_cnt++;
 
-	/* If the fault is true fault, show info and exit. */
-	/* 테스트 출력 방해를 피하기 위해 페이지 폴트 메시지 주석 처리 */
-	/* printf ("Page fault at %p: %s error %s page in %s context.\\n",
-			fault_addr,
-			not_present ? "not present" : "rights violation",
-			write ? "writing" : "reading",
-			user ? "user" : "kernel"); */
-	kill (f);
+	if (!user) {
+		uint64_t handler = f->R.rax;
+		f->R.rax = (uint64_t)-1;
+		f->rip = handler;
+		return;
+	}
+
+	else
+		syscall_exit(-1);
+
+	NOT_REACHED();
+
+	// /* If the fault is true fault, show info and exit. */
+	// printf ("Page fault at %p: %s error %s page in %s context.\n",
+	// 		fault_addr,
+	// 		not_present ? "not present" : "rights violation",
+	// 		write ? "writing" : "reading",
+	// 		user ? "user" : "kernel");
+	// kill (f);
 }
 

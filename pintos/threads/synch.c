@@ -32,14 +32,14 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-/* 세마포어 SEMA를 VALUE로 초기화합니다. 세마포어는 
-   음이 아닌 정수값과 이를 조작하는 두 개의 원자적 연산자로 구성됩니다:
+/* SEMA를 VALUE로 초기화한다. 세마포어는 음이 아닌 정수 값과
+	 이를 조작하는 두 개의 원자적 연산을 가진다.
 
-   - down 또는 "P": 값이 양수가 될 때까지 기다린 후
-   이를 감소시킵니다.
+	 - down 또는 "P": 값이 양수가 될 때까지 기다린 후 값을
+		 1 감소시킨다.
 
-   - up 또는 "V": 값을 증가시킵니다 (그리고 대기 중인 스레드가 
-   있다면 그 중 하나를 깨웁니다). */
+	 - up 또는 "V": 값을 1 증가시키고(대기 중인 스레드가 있으면)
+		 하나의 스레드를 깨운다. */
 void
 sema_init (struct semaphore *sema, unsigned value) {
 	ASSERT (sema != NULL);
@@ -48,13 +48,13 @@ sema_init (struct semaphore *sema, unsigned value) {
 	list_init (&sema->waiters);
 }
 
-/* 세마포어에 대한 Down 또는 "P" 연산입니다. SEMA의 값이
-   양수가 될 때까지 기다린 후 원자적으로 이를 감소시킵니다.
+/* 세마포어에 대한 Down 또는 "P" 연산이다. SEMA의 값이 양수가
+	 될 때까지 대기한 뒤 원자적으로 값을 1 감소시킨다.
 
-   이 함수는 sleep 상태가 될 수 있으므로, 인터럽트 핸들러 내에서
-   호출되어서는 안 됩니다. 인터럽트가 비활성화된 상태에서 호출될 수 있지만,
-   sleep 상태가 되면 다음 스케줄된 스레드가 인터럽트를 다시 활성화할 것입니다.
-   이것이 sema_down 함수입니다. */
+	 이 함수는 잠들 수 있으므로 인터럽트 핸들러 내에서 호출하면
+	 안 된다. 인터럽트가 비활성화된 상태에서 호출될 수는 있으나,
+	 함수가 잠들면 다음 스케줄된 스레드가 인터럽트를 다시 켤 수
+	 있다. (sema_down 함수) */
 void
 sema_down (struct semaphore *sema) {
 	enum intr_level old_level;
@@ -64,17 +64,18 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	while (sema->value == 0) {
-		list_insert_ordered(&sema->waiters, &thread_current()->elem, priority_cmp, NULL);
+		list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_priority_compare, NULL);
 		thread_block ();
 	}
 	sema->value--;
 	intr_set_level (old_level);
 }
 
-/* 세마포어가 이미 0이 아닌 경우에만 수행되는 Down 또는 "P" 연산입니다.
-   세마포어가 감소되면 true를 반환하고, 그렇지 않으면 false를 반환합니다.
+/* 세마포어에 대한 Down 또는 "P" 연산이지만 세마포어 값이 0이
+	 아닌 경우에만 수행한다. 값을 감소시켰다면 true를 반환하고,
+	 그렇지 않으면 false를 반환한다.
 
-   이 함수는 인터럽트 핸들러에서 호출될 수 있습니다. */
+	 이 함수는 인터럽트 핸들러에서 호출될 수 있다. */
 bool
 sema_try_down (struct semaphore *sema) {
 	enum intr_level old_level;
@@ -95,38 +96,31 @@ sema_try_down (struct semaphore *sema) {
 	return success;
 }
 
-/* 세마포어에 대한 Up 또는 "V" 연산입니다. SEMA의 값을 증가시키고
-   SEMA를 기다리는 스레드들 중 하나가 있다면 이를 깨웁니다.
+/* 세마포어에 대한 Up 또는 "V" 연산이다. SEMA의 값을 증가시키고,
+	 대기 중인 스레드가 있으면 그 중 하나를 깨운다.
 
-   이 함수는 인터럽트 핸들러에서 호출될 수 있습니다. */
+	 이 함수는 인터럽트 핸들러에서 호출될 수 있다. */
 void
 sema_up (struct semaphore *sema) {
 	enum intr_level old_level;
-	bool should_yield = false;
-
 	ASSERT (sema != NULL);
-
 	old_level = intr_disable ();
-	if (!list_empty (&sema->waiters)){
-		list_sort(&sema->waiters, priority_cmp, NULL);
-		struct thread *unblocked = list_entry (list_pop_front (&sema->waiters), struct thread, elem);
-		thread_unblock (unblocked);
-		/* 깨운 스레드의 우선순위가 현재 스레드보다 높으면 양보 예약 */
-		if (unblocked->priority > thread_get_priority())
-			should_yield = true;
+
+	if (!list_empty (&sema->waiters)) {
+		// down에서 ordered를 해서 이거 안해도 될 줄 았았다.. 그래서 엄청 해맸다..
+		list_sort (&sema->waiters, thread_priority_compare, NULL);
+		thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
 	}
+
 	sema->value++;
+	thread_preempt();
 	intr_set_level (old_level);
-	
-	if (should_yield && !intr_context())
-		thread_yield();
 }
 
 static void sema_test_helper (void *sema_);
 
-/* 세마포어의 동작을 테스트하는 함수로, 두 스레드 사이에서
-	 제어가 "핑퐁"처럼 오가는 것을 확인합니다. 동작을 확인하려면
-	 printf() 호출을 삽입하세요. */
+/* 두 스레드 사이에서 제어를 주고받는 방식으로 세마포어를 테스트
+	 한다. 진행 상황을 보려면 printf()를 삽입해라. */
 void
 sema_self_test (void) {
 	struct semaphore sema[2];
@@ -144,7 +138,7 @@ sema_self_test (void) {
 	printf ("done.\n");
 }
 
-/* Thread function used by sema_self_test(). */
+/* sema_self_test()에서 사용하는 스레드 함수. */
 static void
 sema_test_helper (void *sema_) {
 	struct semaphore *sema = sema_;
@@ -156,80 +150,61 @@ sema_test_helper (void *sema_) {
 		sema_up (&sema[1]);
 	}
 }
-
-/* LOCK을 초기화합니다. 락은 주어진 시간에 최대 하나의 스레드만이
-   보유할 수 있습니다. 우리의 락은 "재귀적"이지 않습니다. 즉,
-   현재 락을 보유하고 있는 스레드가 같은 락을 획득하려고 하면
-   에러가 발생합니다.
 
-   락은 초기값이 1인 세마포어의 특수한 형태입니다. 락과 이러한
-   세마포어의 차이점은 두 가지입니다. 첫째, 세마포어는 1보다 큰
-   값을 가질 수 있지만, 락은 한 번에 하나의 스레드만이 소유할 수
-   있습니다. 둘째, 세마포어는 소유자가 없어서 한 스레드가
-   세마포어를 "down"하고 다른 스레드가 "up"할 수 있지만, 락은
-   동일한 스레드가 획득과 해제를 모두 수행해야 합니다. 이러한
-   제한이 부담스럽다면, 락 대신 세마포어를 사용하는 것이 
-   좋은 신호입니다. */
+/* LOCK을 초기화한다. 락은 동시에 최대 하나의 스레드만 소유할
+	 수 있다. 이 구현의 락은 재귀적(recursive)이지 않다. 즉, 이미
+	 락을 소유한 스레드가 동일한 락을 다시 획득하려고 하면 오류다.
+
+	 락은 초기값이 1인 세마포어의 특수 형태이다. 락과 세마포어의
+	 차이는 두 가지다. 첫째, 세마포어는 값이 1보다 클 수 있으나
+	 락은 한 번에 하나의 스레드만 소유한다. 둘째, 세마포어는 소유자
+	 개념이 없어서 한 스레드가 down하고 다른 스레드가 up할 수 있지만,
+	 락은 동일한 스레드가 획득(acquire)하고 해제(release)해야 한다.
+	 이러한 제약이 부담스럽다면 락 대신 세마포어를 사용하는 것이
+	 적절하다. */
 void
 lock_init (struct lock *lock) {
 	ASSERT (lock != NULL);
 
 	lock->holder = NULL;
 	sema_init (&lock->semaphore, 1);
-	lock->elem.prev = NULL;
-	lock->elem.next = NULL;
 }
 
-/* LOCK을 획득합니다. 필요하다면 사용할 수 있을 때까지 sleep합니다.
-	 현재 스레드가 이미 락을 보유하고 있으면 안 됩니다.
+/* LOCK을 획득한다. 필요하면 사용 가능해질 때까지 잠긴다. 현재
+	 스레드가 이미 락을 소유하고 있어서는 안 된다.
 
-	 이 함수는 sleep 상태가 될 수 있으므로, 인터럽트 핸들러 내에서
-	 호출되어서는 안 됩니다. 인터럽트가 비활성화된 상태에서 호출될 수 있지만,
-	 sleep이 필요하면 인터럽트가 다시 활성화됩니다. */
+	 이 함수는 잠들 수 있으므로 인터럽트 핸들러 내에서 호출하면
+	 안 된다. 인터럽트가 비활성화된 상태에서 호출될 수는 있으나,
+	 잠들게 되면 인터럽트는 다시 켜질 수 있다. */
+// 락 얻어버리기
 void
 lock_acquire (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (!intr_context ());
 	ASSERT (!lock_held_by_current_thread (lock));
 
-	struct thread *curr = thread_current();
-	
+	// 모시.. 락소유자가 NULL타라
 	if (lock->holder != NULL) {
-		/* 현재 스레드가 이 락을 기다리고 있음을 표시 */
+		enum intr_level old_level = intr_disable ();
+		struct thread *curr = thread_current ();
 		curr->waiting_lock = lock;
-		
-		/* 중첩 기부: 체인을 따라가며 우선순위 전파 */
-		struct thread *holder = lock->holder;
-		int donate_priority = curr->priority;
-		
-		for (int depth = 0; depth < 8 && holder != NULL; depth++) {
-			/* 이미 더 높은 우선순위를 가지고 있으면 중단 */
-			if (holder->priority >= donate_priority)
-				break;
-			
-			/* 우선순위 기부 */
-			holder->priority = donate_priority;
-			
-			/* holder가 다른 락을 기다리고 있으면 체인 계속 */
-			if (holder->waiting_lock == NULL)
-				break;
-			
-			holder = holder->waiting_lock->holder;
-		}
+
+		// 뒤로 붙혀서 순서대로 탐색할게?
+		list_push_back (&lock->holder->donation_list, &curr->donation_elem);
+		thread_donate_priority (curr);
+		intr_set_level (old_level);
 	}
 
 	sema_down (&lock->semaphore);
-	
-	/* 락 획득 완료 - waiting_lock 초기화 */
-	curr->waiting_lock = NULL;
-	lock->holder = curr;
-	list_push_back(&curr->holding_list, &lock->elem);
+	thread_current ()->waiting_lock = NULL;
+	lock->holder = thread_current ();
 }
 
-/* LOCK을 획득 시도하며 성공하면 true, 실패하면 false를 반환합니다.
-	 현재 스레드가 이미 락을 보유하고 있으면 안 됩니다.
+/* LOCK을 획득하려 시도하고 성공하면 true, 실패하면 false를 반환
+	 한다. 현재 스레드가 이미 락을 소유하고 있어서는 안 된다.
 
-	 이 함수는 sleep하지 않으므로, 인터럽트 핸들러 내에서 호출될 수 있습니다. */
+	 이 함수는 잠들지 않으므로 인터럽트 핸들러 내에서 호출할 수
+	 있다. */
 bool
 lock_try_acquire (struct lock *lock) {
 	bool success;
@@ -243,64 +218,61 @@ lock_try_acquire (struct lock *lock) {
 	return success;
 }
 
+/* LOCK을 해제한다. LOCK은 반드시 현재 스레드가 소유하고 있어야
+	 한다. (lock_release 함수)
 
-
-/* 현재 스레드가 소유하고 있어야만 LOCK을 해제합니다.
-	 이것이 lock_release 함수입니다.
-
-	 인터럽트 핸들러는 락을 획득할 수 없으므로,
-	 인터럽트 핸들러 내에서 락을 해제하려고 하는 것은 의미가 없습니다. */
+	 인터럽트 핸들러는 락을 획득할 수 없으므로, 인터럽트 핸들러
+	 내에서 락을 해제하려는 시도는 의미가 없다. */
+// 라꾸 카이죠!!! 
 void
 lock_release (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (lock_held_by_current_thread (lock));
-	
-	struct thread *holder = lock->holder;
-	
-	/* 보유 락 목록에서 제거 */
-	list_remove(&lock->elem);
-	
-	/* 우선순위 재계산 */
-	refresh_priority(holder);
-	
+
+	enum intr_level old_level = intr_disable ();
+
+	// 헤제 했으니 도네 삭제
+	thread_remove_donations (thread_current (), lock);
+	// 삭제했으면 읍데이트
+	thread_update_priority (thread_current ());
+	// 이거 아까 얘기함..
 	lock->holder = NULL;
+
+	intr_set_level (old_level);
 	sema_up (&lock->semaphore);
 }
 
-/* 현재 스레드가 LOCK을 보유하고 있으면 true를 반환하고,
-	 그렇지 않으면 false를 반환합니다. (다른 스레드가 락을 보유하고 있는지
-	 검사하는 것은 경쟁 상태가 발생할 수 있습니다.) */
+/* 현재 스레드가 LOCK을 소유하고 있으면 true, 그렇지 않으면 false를
+	 반환한다. (다른 스레드가 락을 소유하고 있는지 확인하는 것은
+	 레이스 컨디션이 발생할 수 있다.) */
 bool
 lock_held_by_current_thread (const struct lock *lock) {
 	ASSERT (lock != NULL);
 
 	return lock->holder == thread_current ();
 }
-
-/* One semaphore in a list. */
+
+/* 리스트 안의 하나의 세마포어 요소. */
 struct semaphore_elem {
 	struct list_elem elem;              /* List element. */
 	struct semaphore semaphore;         /* This semaphore. */
 };
 
-/* semaphore_elem의 우선순위를 비교하는 함수 */
-static bool
-sema_elem_priority_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
-	struct semaphore_elem *sa = list_entry(a, struct semaphore_elem, elem);
-	struct semaphore_elem *sb = list_entry(b, struct semaphore_elem, elem);
-	
-	struct list_elem *ta_elem = list_front(&sa->semaphore.waiters);
-	struct list_elem *tb_elem = list_front(&sb->semaphore.waiters);
-	
-	struct thread *ta = list_entry(ta_elem, struct thread, elem);
-	struct thread *tb = list_entry(tb_elem, struct thread, elem);
-	
-	return ta->priority > tb->priority;
+bool
+sema_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
+	struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
+
+	if (list_empty (&sa->semaphore.waiters))
+		return false;
+	if (list_empty (&sb->semaphore.waiters))
+		return true;
+
+	return thread_priority_compare (list_front (&sa->semaphore.waiters), list_front (&sb->semaphore.waiters), NULL);
 }
 
-/* 조건 변수 COND를 초기화합니다. 조건 변수는 한 코드가
-   조건을 신호로 보내고 협력하는 코드가 그 신호를 받아
-   이에 따라 행동할 수 있게 합니다. */
+/* 조건 변수 COND를 초기화한다. 조건 변수는 한 쪽 코드가 상태를
+	 신호하고 다른 쪽 코드가 그 신호를 받아 동작하도록 한다. */
 void
 cond_init (struct condition *cond) {
 	ASSERT (cond != NULL);
@@ -308,22 +280,21 @@ cond_init (struct condition *cond) {
 	list_init (&cond->waiters);
 }
 
-/* 원자적으로 LOCK을 해제하고 다른 코드에 의해 COND가 신호될 때까지
-   기다립니다. COND가 신호되면, 반환하기 전에 LOCK을 다시 획득합니다.
-   이 함수를 호출하기 전에 LOCK이 보유되어 있어야 합니다.
+/* LOCK을 원자적으로 해제한 뒤 다른 코드가 COND를 신호할 때까지
+	 기다린다. COND가 신호되면 반환 전에 LOCK을 다시 획득한다.
+	 이 함수를 호출하기 전에는 LOCK을 소유하고 있어야 한다.
 
-   이 함수로 구현된 모니터는 "Hoare" 방식이 아닌 "Mesa" 방식입니다.
-   즉, 신호를 보내고 받는 것이 원자적 연산이 아닙니다. 따라서,
-   일반적으로 호출자는 대기가 완료된 후 조건을 다시 확인해야 하며,
-   필요한 경우 다시 대기해야 합니다.
+	 이 함수가 구현하는 모니터는 "Mesa" 스타일이며 "Hoare" 스타일이
+	 아니다. 즉, 신호의 전송과 수신이 원자적 연산이 아니다. 따라서
+	 일반적으로 대기 후에는 조건을 다시 확인하고 필요하면 다시
+	 기다려야 한다.
 
-   주어진 조건 변수는 단 하나의 락과만 연관되지만, 하나의 락은
-   여러 개의 조건 변수와 연관될 수 있습니다. 즉, 락에서 조건
-   변수로의 일대다 매핑이 존재합니다.
+	 특정 조건 변수는 하나의 락과만 연관되지만, 하나의 락은 여러
+	 조건 변수와 연관될 수 있다. 즉 락과 조건 변수는 일대다 관계이다.
 
-   이 함수는 sleep 상태가 될 수 있으므로, 인터럽트 핸들러 내에서
-   호출되어서는 안 됩니다. 인터럽트가 비활성화된 상태에서 호출될
-   수 있지만, sleep이 필요한 경우 인터럽트가 다시 활성화됩니다. */
+	 이 함수는 잠들 수 있으므로 인터럽트 핸들러 내에서 호출하면 안
+	 된다. 인터럽트가 비활성화된 상태에서 호출될 수는 있으나, 잠들
+	 경우 인터럽트는 다시 켜질 수 있다. */
 void
 cond_wait (struct condition *cond, struct lock *lock) {
 	struct semaphore_elem waiter;
@@ -334,18 +305,19 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	ASSERT (lock_held_by_current_thread (lock));
 
 	sema_init (&waiter.semaphore, 0);
-	list_push_back(&cond->waiters, &waiter.elem);
+	// list_push_back (&cond->waiters, &waiter.elem);
+	list_insert_ordered(&cond->waiters, &waiter.elem, sema_priority_compare, NULL);
 	lock_release (lock);
 	sema_down (&waiter.semaphore);
 	lock_acquire (lock);
 }
 
-/* COND를 기다리는 스레드가 있다면(LOCK으로 보호됨), 이 함수는
-   그 중 하나에게 대기 상태에서 깨어나라는 신호를 보냅니다.
-   이 함수를 호출하기 전에 LOCK이 보유되어 있어야 합니다.
+/* 만약 COND에 대해 대기 중인 스레드가 있으면(LOCK으로 보호됨)
+	 이 함수는 그들 중 하나에게 신호를 보내 대기에서 깨어나게 한다.
+	 이 함수를 호출하기 전에 LOCK을 소유하고 있어야 한다.
 
-   인터럽트 핸들러는 락을 획득할 수 없으므로, 인터럽트 핸들러
-   내에서 조건 변수에 신호를 보내는 것은 의미가 없습니다. */
+	 인터럽트 핸들러는 락을 획득할 수 없으므로, 인터럽트 핸들러
+	 내에서 조건 변수에 신호를 보내려는 시도는 의미가 없다. */
 void
 cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (cond != NULL);
@@ -354,17 +326,17 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (lock_held_by_current_thread (lock));
 
 	if (!list_empty (&cond->waiters)) {
-		list_sort(&cond->waiters, sema_elem_priority_cmp, NULL);
-		sema_up (&list_entry (list_pop_front (&cond->waiters),
-					struct semaphore_elem, elem)->semaphore);
+		struct list_elem *e = list_min (&cond->waiters, sema_priority_compare, NULL);
+		list_remove(e);
+		sema_up (&list_entry (e, struct semaphore_elem, elem)->semaphore);
 	}
 }
 
-/* COND를 기다리는 모든 스레드를 깨웁니다(LOCK으로 보호됨).
-   이 함수를 호출하기 전에 LOCK이 보유되어 있어야 합니다.
+/* COND에 대해 대기 중인 모든 스레드를 깨운다(LOCK으로 보호됨).
+	 이 함수를 호출하기 전에 LOCK을 소유하고 있어야 한다.
 
-   인터럽트 핸들러는 락을 획득할 수 없으므로, 인터럽트 핸들러
-   내에서 조건 변수에 신호를 보내는 것은 의미가 없습니다. */
+	 인터럽트 핸들러는 락을 획득할 수 없으므로, 이 함수 내에서
+	 조건 변수에 신호를 보내려는 시도는 의미가 없다. */
 void
 cond_broadcast (struct condition *cond, struct lock *lock) {
 	ASSERT (cond != NULL);

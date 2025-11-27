@@ -2,18 +2,12 @@
 #include <debug.h>
 #include "filesys/inode.h"
 #include "threads/malloc.h"
-#include "threads/synch.h"
-
-/* file_close에서 ref_count 보호를 위한 lock */
-static struct lock file_lock;
-static bool file_lock_initialized = false;
 
 /* An open file. */
 struct file {
 	struct inode *inode;        /* File's inode. */
 	off_t pos;                  /* Current position. */
 	bool deny_write;            /* Has file_deny_write() been called? */
-	int ref_count;              /* Reference count for shared file descriptors. */
 };
 
 /* Opens a file for the given INODE, of which it takes ownership,
@@ -21,18 +15,11 @@ struct file {
  * allocation fails or if INODE is null. */
 struct file *
 file_open (struct inode *inode) {
-	/* file_lock 초기화 (첫 호출 시) */
-	if (!file_lock_initialized) {
-		lock_init(&file_lock);
-		file_lock_initialized = true;
-	}
-	
 	struct file *file = calloc (1, sizeof *file);
 	if (inode != NULL && file != NULL) {
 		file->inode = inode;
 		file->pos = 0;
 		file->deny_write = false;
-		file->ref_count = 1;
 		return file;
 	} else {
 		inode_close (inode);
@@ -52,7 +39,6 @@ file_reopen (struct file *file) {
  * same inode as FILE. Returns a null pointer if unsuccessful. */
 struct file *
 file_duplicate (struct file *file) {
-	/* KAIST Pintos: fork 후 독립적인 file offset을 가짐 */
 	struct file *nfile = file_open (inode_reopen (file->inode));
 	if (nfile) {
 		nfile->pos = file->pos;
@@ -66,18 +52,9 @@ file_duplicate (struct file *file) {
 void
 file_close (struct file *file) {
 	if (file != NULL) {
-		/* ref_count 감소를 원자적으로 수행 */
-		lock_acquire(&file_lock);
-		file->ref_count--;
-		bool should_free = (file->ref_count <= 0);
-		lock_release(&file_lock);
-		
-		/* ref_count가 0 이하가 되면 실제로 메모리 해제 */
-		if (should_free) {
-			file_allow_write (file);
-			inode_close (file->inode);
-			free (file);
-		}
+		file_allow_write (file);
+		inode_close (file->inode);
+		free (file);
 	}
 }
 

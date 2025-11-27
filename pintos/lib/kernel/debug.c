@@ -9,8 +9,8 @@
 #include "threads/interrupt.h"
 #include "devices/serial.h"
 
-/* 소스 파일 이름, 줄(라인) 번호, 함수 이름,
-   그리고 사용자 지정 메시지를 출력하며 OS를 중단시킵니다. */
+/* Halts the OS, printing the source file name, line number, and
+   function name, plus a user-specific message. */
 void
 debug_panic (const char *file, int line, const char *function,
 		const char *message, ...) {

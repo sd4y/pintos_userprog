@@ -28,3 +28,11 @@ core
 
 # macOS
 .DS_Store
+
+# 개인적인 테스트코드 실행용 쉘코드
+select_test.sh
+
+.test_config
+.test_status
+
+.vscode

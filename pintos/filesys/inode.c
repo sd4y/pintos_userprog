@@ -220,8 +220,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 		offset += chunk_size;
 		bytes_read += chunk_size;
 	}
-	if (bounce != NULL)
-		free (bounce);
+	free (bounce);
 
 	return bytes_read;
 }

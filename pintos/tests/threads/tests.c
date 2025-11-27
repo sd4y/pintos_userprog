@@ -2,7 +2,6 @@
 #include <debug.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 struct test 
   {

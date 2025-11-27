@@ -21,8 +21,9 @@ typedef unsigned long elem_type;
 /* Number of bits in an element. */
 #define ELEM_BITS (sizeof (elem_type) * CHAR_BIT)
 
-/* 외부에서 보면 비트맵은 비트들의 배열입니다.
-	내부적으로는 elem_type(위에서 정의됨) 배열로 비트 배열을 흉내냅니다. */
+/* From the outside, a bitmap is an array of bits.  From the
+   inside, it's an array of elem_type (defined above) that
+   simulates an array of bits. */
 struct bitmap {
 	size_t bit_cnt;     /* Number of bits. */
 	elem_type *bits;    /* Elements that represent bits. */
