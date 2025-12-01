@@ -1,6 +1,9 @@
 /* vm.c: Generic interface for virtual memory objects. */
 
 #include "threads/malloc.h"
+#include "threads/vaddr.h"
+#include "threads/mmu.h"
+#include "hash.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
 
@@ -36,37 +39,63 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
+static void spt_destroy_page (struct hash_elem *e, void *aux);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
- * `vm_alloc_page`. */
+ * `vm_alloc_page`. 
+ * 페이지 생성 함수*/
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
 
-	ASSERT (VM_TYPE(type) != VM_UNINIT)
+	ASSERT (VM_TYPE(type) != VM_UNINIT);
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
-	/* Check wheter the upage is already occupied or not. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
+		struct page *page = malloc (sizeof (struct page));
+		if (page == NULL)
+			goto err;
 
-		/* TODO: Insert the page into the spt. */
+		bool (*page_initializer) (struct page *, enum vm_type, void *) = NULL;
+		switch (VM_TYPE (type)) {
+		case VM_ANON:
+			page_initializer = anon_initializer;
+			break;
+		case VM_FILE:
+			page_initializer = file_backed_initializer;
+			break;
+#ifdef EFILESYS
+		case VM_PAGE_CACHE:
+			page_initializer = page_cache_initializer;
+			break;
+#endif
+		default:
+			goto err;
+		}
+
+		uninit_new (page, upage, init, type, aux, page_initializer);
+		page->writable = writable;
+
+		if (spt_insert_page (spt, page))
+			return true;
+		free (page);
 	}
 err:
 	return false;
 }
 
 /* Find VA from spt and return page. On error, return NULL. */
-struct page *
+struct page*
 spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
-	struct page *page = NULL;
-	/* TODO: Fill this function. */
+	struct page page;
+	struct hash_elem *elem;
 
-	return page;
+	page.va = pg_round_down (va);
+	elem = hash_find (&spt->page_hash, &page.e);
+
+	return elem ? hash_entry (elem, struct page, e) : NULL;
 }
 
 /* Insert PAGE into spt with validation. */
@@ -74,7 +103,7 @@ bool
 spt_insert_page (struct supplemental_page_table *spt UNUSED,
 		struct page *page UNUSED) {
 	int succ = false;
-	/* TODO: Fill this function. */
+	succ = hash_insert (&spt->page_hash, &page->e) == NULL;
 
 	return succ;
 }
@@ -171,9 +200,24 @@ vm_do_claim_page (struct page *page) {
 	return swap_in (page, frame->kva);
 }
 
+bool 
+page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+	struct page *page_a = hash_entry(a, struct page, e);
+	struct page *page_b = hash_entry(b, struct page, e);
+
+	return page_a->va < page_b->va;
+}
+
+uint64_t
+page_hash (const struct hash_elem *e, void *aux) {
+	struct page *page = hash_entry(e, struct page, e);
+	return hash_bytes(&page->va, sizeof(page->va));
+}
+
 /* Initialize new supplemental page table */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+	hash_init(&spt->page_hash, page_hash, page_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */
@@ -185,6 +229,18 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 /* Free the resource hold by the supplemental page table */
 void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
-	/* TODO: Destroy all the supplemental_page_table hold by thread and
-	 * TODO: writeback all the modified contents to the storage. */
+	hash_destroy (&spt->page_hash, spt_destroy_page);
+}
+
+static void
+spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
+	struct page *page = hash_entry (e, struct page, e);
+	struct thread *curr = thread_current ();
+
+	if (page->frame != NULL) {
+		if (pml4_is_dirty (curr->pml4, page->va))
+			swap_out (page);
+		pml4_clear_page (curr->pml4, page->va);
+	}
+	vm_dealloc_page (page);
 }
