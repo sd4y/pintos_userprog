@@ -132,10 +132,11 @@ syscall_handler (struct intr_frame *f UNUSED) {
 static void check_address(const void *addr){
 	struct thread *cur = thread_current();
 
-    if (addr == NULL || is_kernel_vaddr(addr) || pml4_get_page(cur->pml4, addr) == NULL){
+    if (addr == NULL || is_kernel_vaddr(addr)){
         handler_exit(-1);
     }
 }
+// || pml4_get_page(cur->pml4, addr) == NULL
 
 static void check_string(const char *str){
 	check_address(str);

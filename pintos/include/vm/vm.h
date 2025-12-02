@@ -2,6 +2,7 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+#include "hash.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -42,28 +43,36 @@ struct thread;
  * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
 struct page {
 	const struct page_operations *operations;
-	void *va;              /* Address in terms of user space */
-	struct frame *frame;   /* Back reference for frame */
+	void *va;            // 가상 주소
+	struct frame *frame;   // RAM에 있으면 어떤 프레임과 연결되어 있는가
 
 	/* Your implementation */
+	bool writable;	// 페이지 쓰기 읽기 권한
+	struct hash_elem hash_elem; // SPT(해시 테이블)에 대한 연결고리
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
 	union {
-		struct uninit_page uninit;
-		struct anon_page anon;
-		struct file_page file;
+		struct uninit_page uninit; // 아직 로딩 안된 상태 -> 로딩 대기중
+		struct anon_page anon; // 스택/힙 or 스왑 에 없는 상태
+		struct file_page file; // 파일에 매핑된 상태
 #ifdef EFILESYS
 		struct page_cache page_cache;
 #endif
 	};
 };
 
+// 프레임 테이블 리스트
+extern struct list frame_table;
+extern struct lock frame_table_lock;
+
 /* The representation of "frame" */
 struct frame {
 	void *kva;
 	struct page *page;
+	struct list_elem frame_elem;
 };
+
 
 /* The function table for page operations.
  * This is one way of implementing "interface" in C.
@@ -85,6 +94,7 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
+	struct hash page;
 };
 
 #include "threads/thread.h"

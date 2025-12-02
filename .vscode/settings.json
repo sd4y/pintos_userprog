@@ -39,7 +39,13 @@
         "mmu.h": "c",
         "palloc.h": "c",
         "syscall-nr.h": "c",
-        "cstdio": "c"
+        "cstdio": "c",
+        "process.h": "c",
+        "vaddr.h": "c",
+        "intr-stubs.h": "c",
+        "stdbool.h": "c",
+        "directory.h": "c",
+        "init.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }

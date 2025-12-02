@@ -251,9 +251,10 @@ vm_do_claim_page (struct page *page) {
 		page->frame = NULL;
 		palloc_free_page (frame->kva);
 		free (frame);
-		return false;
+		return swap_in (page, frame->kva);
 	}
 }
+
 // hash_hash_func
 // 2개의 포인터를 넘겨야 함.
 unsigned page_hash (const struct hash_elem *h, void *aux UNUSED){

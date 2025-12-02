@@ -132,18 +132,18 @@ page_fault (struct intr_frame *f) {
 	   be assured of reading CR2 before it changed). */
 	intr_enable ();
 
-	// 유저 영역 주소가 아니거나(커널 영역 침범), 유저가 접근 권한이 없어서 났다면
-    if (!user || (fault_addr >= KERN_BASE && !user)) { // KERN_BASE 등 상수 사용 권장
-        struct thread *curr = thread_current();
-        curr->exit_status = -1;
-        thread_exit(); 
-    }
 
 	/* Determine cause. */
 	not_present = (f->error_code & PF_P) == 0;
 	write = (f->error_code & PF_W) != 0;
 	user = (f->error_code & PF_U) != 0;
 
+	// 유저 영역 주소가 아니거나(커널 영역 침범), 유저가 접근 권한이 없어서 났다면
+	if (!user || (fault_addr >= KERN_BASE && !user)) {
+		struct thread *curr = thread_current();
+		curr->exit_status = -1;
+		thread_exit(); 
+	}
 #ifdef VM
 	/* For project 3 and later. */
 	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
@@ -161,4 +161,3 @@ page_fault (struct intr_frame *f) {
 			user ? "user" : "kernel");
 	kill (f);
 }
-

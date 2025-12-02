@@ -21,6 +21,7 @@
 #include "intrinsic.h"
 #include "devices/timer.h"
 #include "filesys/file.h"
+#define VM 1
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -305,6 +306,9 @@ process_exec (void *f_name) {
 	// 먼저 현재 컨텍스트를 종료 -> pml4 파괴술
 	process_cleanup();
 
+	#ifdef VM
+		supplemental_page_table_init (&thread_current()->spt);
+	#endif
 	/* And then load the binary */
 	// 바이너리를 로드
 	success = load (file_name, &_if);
@@ -444,7 +448,7 @@ process_cleanup (void) {
 	struct thread *curr = thread_current ();
 	
 	#ifdef VM
-	supplemental_page_table_kill (&curr->spt);
+		supplemental_page_table_kill (&curr->spt);
 	#endif
 
 	uint64_t *pml4;
@@ -659,8 +663,9 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	
 	/* Set up stack. */
-	if (!setup_stack (if_))
-	goto done;
+	if (!setup_stack (if_)){
+		goto done;
+	}
 	
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
@@ -894,11 +899,30 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
+struct aux_info {
+	struct file *file;
+	off_t ofs;
+	uint32_t read_bytes;
+	uint32_t zero_bytes;
+};
+
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	struct aux_info *new = (struct aux_info *)aux;
+	
+	file_seek(new->file, new->ofs);
+	if(file_read(new->file, page->frame->kva, new->read_bytes) != (int) new->read_bytes){
+        return false; 
+    }
+
+	memset(page->frame->kva + new->read_bytes, 0, new->zero_bytes);
+
+	free(aux);
+
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -930,12 +954,25 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
-			return false;
+		struct aux_info *aux = malloc(sizeof(struct aux_info));
+		if (aux == NULL) return false;
 
+		aux->file = file_reopen(file);
+		aux->ofs = ofs;
+		aux->read_bytes = page_read_bytes;
+		aux->zero_bytes = page_zero_bytes;
+
+		if (aux->file == NULL) {
+			free(aux);
+			return false;
+		}
+		/* Get a page of memory. */
+		if (!vm_alloc_page_with_initializer (VM_FILE, upage, writable, lazy_load_segment, aux)){
+			free(aux);
+			return false;
+		}
 		/* Advance. */
+		ofs += page_read_bytes;
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
@@ -944,16 +981,35 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
-static bool
-setup_stack (struct intr_frame *if_) {
-	bool success = false;
-	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+// static bool
+// setup_stack (struct intr_frame *if_) {
+// 	bool success = false;
+// 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+// 	/* TODO: Map the stack on stack_bottom and claim the page immediately.
+// 	 * TODO: If success, set the rsp accordingly.
+// 	 * TODO: You should mark the page is stack. */
+// 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
+// 		success = vm_claim_page (stack_bottom);
+// 		if (success)
+// 			if_->rsp = USER_STACK;
+// 	}
 
-	return success;
+// 	return success;
+// }
+static bool setup_stack(struct intr_frame* if_) {
+    struct page* page;
+    struct thread* cur = thread_current();
+    void* stack_bottom = (uint8_t*)USER_STACK - PGSIZE;
+    if (!vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL))
+        return false;
+    if (!vm_claim_page(stack_bottom)) {
+        page = spt_find_page(&cur->spt, stack_bottom);
+        if (page != NULL)
+            spt_remove_page(&cur->spt, page);
+        return false;
+    }
+    if_->rsp = USER_STACK;
+    return true;
 }
 #endif /* VM */
