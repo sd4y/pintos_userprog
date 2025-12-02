@@ -2,6 +2,8 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+/* hash types are used by struct page / supplemental page table */
+#include "hash.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -44,7 +46,8 @@ struct page {
 	const struct page_operations *operations;
 	void *va;              /* Address in terms of user space */
 	struct frame *frame;   /* Back reference for frame */
-	
+	bool writable;         /* Page is writable */
+
 	/* Your implementation */
 	struct hash_elem e;
 	/* Per-type data are binded into the union.
@@ -59,10 +62,14 @@ struct page {
 	};
 };
 
+extern struct list frame_table;
+extern struct lock frame_lock;
+
 /* The representation of "frame" */
 struct frame {
 	void *kva;
 	struct page *page;
+	struct list_elem e;
 };
 
 /* The function table for page operations.
@@ -90,6 +97,14 @@ struct supplemental_page_table {
 	
 };
 
+struct lazy_aux {
+    struct file *file;
+    off_t ofs;
+    size_t read_bytes;
+    size_t zero_bytes;
+    bool writable;
+};
+
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);
 bool supplemental_page_table_copy (struct supplemental_page_table *dst,
@@ -111,5 +126,6 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
+void* set_lazy_aux(struct file *file, off_t ofs, size_t read_bytes, size_t zero_bytes);
 
 #endif  /* VM_VM_H */

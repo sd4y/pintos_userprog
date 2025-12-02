@@ -123,6 +123,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			f->R.rax = handler_dup2((int) f->R.rdi, (int) f->R.rsi);
 			break;
 		default:
+			printf("unknown syscall %d\n", syscall_num);
 			handler_exit(-1);
 			break;
 	}
@@ -133,6 +134,7 @@ static void check_address(const void *addr){
 	struct thread *cur = thread_current();
 
     if (addr == NULL || is_kernel_vaddr(addr) || pml4_get_page(cur->pml4, addr) == NULL){
+		printf("invalid user ptr %p\n", addr);
         handler_exit(-1);
     }
 }

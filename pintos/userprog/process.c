@@ -21,6 +21,7 @@
 #include "intrinsic.h"
 #include "devices/timer.h"
 #include "filesys/file.h"
+#define VM 1
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -305,6 +306,9 @@ process_exec (void *f_name) {
 	// 먼저 현재 컨텍스트를 종료 -> pml4 파괴술
 	process_cleanup();
 
+#ifdef VM
+	supplemental_page_table_init (&thread_current ()->spt);
+#endif
 	/* And then load the binary */
 	// 바이너리를 로드
 	success = load (file_name, &_if);
@@ -610,11 +614,15 @@ load (const char *file_name, struct intr_frame *if_) {
 		struct Phdr phdr;
 
 		if (file_ofs < 0 || file_ofs > file_length (file))
+		{
 			goto done;
+		}
 		file_seek (file, file_ofs);
 
 		if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+		{
 			goto done;
+		}
 		file_ofs += sizeof phdr;
 		switch (phdr.p_type) {
 			case PT_NULL:
@@ -648,11 +656,15 @@ load (const char *file_name, struct intr_frame *if_) {
 						zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
 					}
 					if (!load_segment (file, file_page, (void *) mem_page,
-								read_bytes, zero_bytes, writable))
+							read_bytes, zero_bytes, writable))
+					{
 						goto done;
+					}
 				}
 				else
+				{
 					goto done;
+				}
 				break;
 		}
 	}
@@ -660,7 +672,9 @@ load (const char *file_name, struct intr_frame *if_) {
 	
 	/* Set up stack. */
 	if (!setup_stack (if_))
+	{
 	goto done;
+	}
 	
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
@@ -726,7 +740,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	+---------------------------+ ← rsp
 	낮은 주소
 	*/
-success = true;
+	success = true;
 
 done:
 /* We arrive here whether the load is successful or not. */
@@ -896,9 +910,22 @@ install_page (void *upage, void *kpage, bool writable) {
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
+
+	struct lazy_aux *laux = (struct lazy_aux *) aux;
+	struct file *file = laux->file;
+
 	/* TODO: Load the segment from the file */
+	file_seek (file, laux->ofs);
+	void *kva = page->frame->kva;
+
+	if(file_read(file, kva, laux->read_bytes) != (int) laux->read_bytes)
+		return false;
+	
+	memset(kva + laux->read_bytes, 0, laux->zero_bytes);
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	free(aux);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -930,12 +957,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		void *aux = set_lazy_aux(file, ofs, page_read_bytes, page_zero_bytes);
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+					writable, lazy_load_segment, aux)){
+						free(aux);
 			return false;
-
+					}
 		/* Advance. */
+		ofs += page_read_bytes;
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
@@ -949,10 +978,11 @@ setup_stack (struct intr_frame *if_) {
 	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
+		success = vm_claim_page (stack_bottom);
+		if (success)
+			if_->rsp = USER_STACK;
+	}
 
 	return success;
 }

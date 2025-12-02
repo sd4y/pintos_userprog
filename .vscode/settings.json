@@ -40,7 +40,11 @@
         "palloc.h": "c",
         "syscall-nr.h": "c",
         "cstdio": "c",
-        "vm.h": "c"
+        "vm.h": "c",
+        "inspect.h": "c",
+        "anon.h": "c",
+        "uninit.h": "c",
+        "process.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }
