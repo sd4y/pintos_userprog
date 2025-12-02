@@ -3,9 +3,14 @@
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
+#include <string.h>
 #include "hash.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+
+struct list frame_table;
+struct lock frame_lock;
+static bool frame_system_ready;
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -18,7 +23,9 @@ vm_init (void) {
 #endif
 	register_inspect_intr ();
 	/* DO NOT MODIFY UPPER LINES. */
-	/* TODO: Your code goes here. */
+	list_init (&frame_table);
+	lock_init (&frame_lock);
+	frame_system_ready = true;
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -110,8 +117,11 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
-	vm_dealloc_page (page);
-	return true;
+	struct hash_elem *e;
+
+	e = hash_delete (&spt->page_hash, &page->e);
+	if (e != NULL)
+		spt_destroy_page (e, NULL);
 }
 
 /* Get the struct frame, that will be evicted. */
@@ -140,7 +150,24 @@ vm_evict_frame (void) {
 static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
-	/* TODO: Fill this function. */
+	ASSERT (frame_system_ready);
+	void *kva = palloc_get_page (PAL_USER);
+
+if (kva == NULL)
+        PANIC("todo: implement eviction");
+	else {
+		frame = malloc (sizeof *frame);
+		if (frame == NULL) {
+			palloc_free_page (kva);
+			PANIC ("Failed to allocate frame metadata");
+		}
+		frame->kva = kva;
+		frame->page = NULL;
+
+		lock_acquire (&frame_lock);
+		list_push_back (&frame_table, &frame->e);
+		lock_release (&frame_lock);
+	}
 
 	ASSERT (frame != NULL);
 	ASSERT (frame->page == NULL);
@@ -161,10 +188,21 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
-	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
-	struct page *page = NULL;
-	/* TODO: Validate the fault */
-	/* TODO: Your code goes here */
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct page *page;
+
+	if (addr == NULL || is_kernel_vaddr (addr))
+		return false;
+
+	if (!not_present)
+		return false;
+
+	page = spt_find_page (spt, addr);
+	if (page == NULL)
+		return false;
+
+	if (write && !page->writable)
+		return false;
 
 	return vm_do_claim_page (page);
 }
@@ -179,9 +217,10 @@ vm_dealloc_page (struct page *page) {
 
 /* Claim the page that allocate on VA. */
 bool
-vm_claim_page (void *va UNUSED) {
-	struct page *page = NULL;
-	/* TODO: Fill this function */
+vm_claim_page (void *va) {
+	struct page *page = spt_find_page (&thread_current ()->spt, va);
+	if (page == NULL)
+		return false;
 
 	return vm_do_claim_page (page);
 }
@@ -195,7 +234,15 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: Insert page table entry to map page's VA to frame's PA. */
+	/* Map user page to the allocated frame. */
+	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva,
+		page->writable)) {
+		frame->page = NULL;
+		page->frame = NULL;
+		palloc_free_page (frame->kva);
+		free (frame);
+		return false;
+	}
 
 	return swap_in (page, frame->kva);
 }
@@ -224,6 +271,37 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
+	struct hash_iterator iter;
+	hash_first (&iter, &src->page_hash);
+
+	while (hash_next (&iter)) {
+		struct page *src_page = hash_entry (hash_cur (&iter), struct page, e);
+		enum vm_type type = page_get_type (src_page);
+		bool ok = false;
+
+		if (type == VM_UNINIT) {
+			struct uninit_page *u = &src_page->uninit;
+			ok = vm_alloc_page_with_initializer (u->type, src_page->va,
+				src_page->writable, u->init, u->aux);
+		} else {
+			ok = vm_alloc_page (type, src_page->va, src_page->writable);
+		}
+
+		if (!ok)
+			goto err;
+
+		/* If the source page is already in memory, clone its contents. */
+		if (src_page->frame != NULL) {
+			struct page *dst_page = spt_find_page (dst, src_page->va);
+			if (dst_page == NULL || !vm_do_claim_page (dst_page))
+				goto err;
+			memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+		}
+	}
+	return true;
+err:
+	supplemental_page_table_kill (dst);
+	return false;
 }
 
 /* Free the resource hold by the supplemental page table */
@@ -243,4 +321,15 @@ spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 		pml4_clear_page (curr->pml4, page->va);
 	}
 	vm_dealloc_page (page);
+}
+
+void*
+set_lazy_aux(struct file* file, off_t ofs, size_t read_bytes, size_t zero_bytes) {
+	struct lazy_aux *lazy_aux = malloc(sizeof(struct lazy_aux));
+	lazy_aux->file = file;
+	lazy_aux->ofs = ofs;
+	lazy_aux->read_bytes = read_bytes;
+	lazy_aux->zero_bytes = zero_bytes;
+
+	return lazy_aux;
 }
