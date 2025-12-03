@@ -10,6 +10,8 @@
 
 #include "vm/vm.h"
 #include "vm/uninit.h"
+#include "userprog/process.h"
+#include "threads/malloc.h"
 
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
@@ -63,6 +65,13 @@ uninit_initialize (struct page *page, void *kva) {
 static void
 uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
+	struct aux_info *aux = (struct aux_info *)uninit->aux;
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
+	if(aux != NULL){
+		if(aux->file != NULL){
+			file_close(aux->file);
+		}
+		free(aux);
+	}
 }

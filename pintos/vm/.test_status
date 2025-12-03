@@ -1,7 +1,7 @@
 args-dbl-space FAIL
 args-multiple FAIL
 create-normal FAIL
-args-none FAIL
+args-none PASS
 halt FAIL
 create-null FAIL
 exit FAIL

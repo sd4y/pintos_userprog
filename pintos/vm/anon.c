@@ -3,6 +3,7 @@
 #include "vm/vm.h"
 #include "devices/disk.h"
 #include "threads/vaddr.h"
+#include <string.h>
 
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
@@ -32,7 +33,9 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &anon_ops;
 	struct anon_page *anon_page UNUSED = &page->anon;
     /* Stack pages have no initializer, so provide zero-filled memory. */
-    memset (kva, 0, PGSIZE);
+	// 초기화 시 스왑 인덱스는 -1
+    anon_page->swap_index = -1;
+
     return true;
 }
 
@@ -55,4 +58,9 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page UNUSED = &page->anon;
+	
+	// // 이 페이지가 스왑 영역(디스크)에 있다면?
+	// if (anon_page->swap_index != -1){
+
+	// }
 }

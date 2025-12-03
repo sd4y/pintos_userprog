@@ -12,6 +12,8 @@
 struct list frame_table;
 struct lock frame_table_lock;
 
+void spt_destroy_page (struct hash_elem *e, void *aux);
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -100,7 +102,7 @@ spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	// 4kb로 정렬 -> 가상 주소를 찾아야 하기 때문
 	page.va = pg_round_down(va); // 내림
 	// 테이블 검색
-	struct hash_elem *e = hash_find(&spt->page, &page.hash_elem); // -> 뭘 알고싶은거야
+	struct hash_elem *e = hash_find(&spt->page, &page.hash_elem);
 	if(e == NULL) return NULL;
 	// page 구조체로 hash_elem을 준다.
 	return hash_entry(e, struct page, hash_elem);
@@ -151,7 +153,7 @@ vm_evict_frame (void) {
  * space.*/
 static struct frame *
 vm_get_frame (void) {
-	void *kva = palloc_get_page (PAL_USER);
+	void *kva = palloc_get_page (PAL_USER | PAL_ZERO);
 	/* TODO: Fill this function. */
 	struct frame *frame = NULL;
 	
@@ -251,8 +253,9 @@ vm_do_claim_page (struct page *page) {
 		page->frame = NULL;
 		palloc_free_page (frame->kva);
 		free (frame);
-		return swap_in (page, frame->kva);
+		return false;
 	}
+	return swap_in (page, frame->kva);
 }
 
 // hash_hash_func
@@ -304,7 +307,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED, struct
 			}
 		} else { //이미 로드된 페이지인 경우
 			// 자식 프로세스에도 같은 타입의 페이지 할당을 한다. -> uninit 상태로 생성된다.
-			if(!vm_alloc_page_with_initializer (type, upage, writable, NULL, NULL)){
+			if(!vm_alloc_page_with_initializer (VM_ANON, upage, writable, NULL, NULL)){
                 return false;
             }
 			
@@ -328,14 +331,16 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED, struct
 void
 spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 	struct page *page = hash_entry (e, struct page, hash_elem);
-	struct thread *curr = thread_current ();
+	struct thread *cur = thread_current ();
 
-	if (page->frame != NULL) {
-		if (pml4_is_dirty (curr->pml4, page->va))
-			swap_out (page);
-		pml4_clear_page (curr->pml4, page->va);
+	// 페이지 테이블에서 매핑을 끊어주기 -> frame이 할당된 경우
+	if(page->frame != NULL){
+		if(cur->pml4 != NULL){
+			pml4_clear_page(cur->pml4, page->va);
+		}
 	}
-	vm_dealloc_page (page);
+	// 페이지 구조체 자체를 메모리에서 해제
+	vm_dealloc_page(page);
 }
 
 /* Free the resource hold by the supplemental page table */
