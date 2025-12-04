@@ -16,6 +16,8 @@ static const struct page_operations file_ops = {
 	.type = VM_FILE,
 };
 
+extern struct lazy_aux;
+
 /* The initializer of file vm */
 void
 vm_file_init (void) {
@@ -26,7 +28,7 @@ bool
 file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 	/* Set up the handler */
 	page->operations = &file_ops;
-	struct file_page *file_page UNUSED = &page->file;
+	memset (&page->file, 0, sizeof page->file);
 	memset (kva, 0, PGSIZE);
 	return true;
 }
@@ -34,8 +36,13 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 /* Swap in the page by read contents from the file. */
 static bool
 file_backed_swap_in (struct page *page, void *kva) {
-	struct file_page *file_page UNUSED = &page->file;
-	memset (kva, 0, PGSIZE);
+	struct file_page *file_page = &page->file;
+	if (file_page->file == NULL)
+		return false;
+	if (file_read_at (file_page->file, kva, file_page->read_bytes,
+			file_page->ofs) != (int) file_page->read_bytes)
+		return false;
+	memset (kva + file_page->read_bytes, 0, file_page->zero_bytes);
 	return true;
 }
 
@@ -49,7 +56,11 @@ file_backed_swap_out (struct page *page) {
 /* Destory the file backed page. PAGE will be freed by the caller. */
 static void
 file_backed_destroy (struct page *page) {
-	struct file_page *file_page UNUSED = &page->file;
+	struct file_page *file_page = &page->file;
+	// if (file_page->file != NULL) {
+	// 	file_close (file_page->file);
+	// 	file_page->file = NULL;
+	// }
 }
 
 /* Do the mmap */

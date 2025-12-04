@@ -57,4 +57,6 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page UNUSED = &page->anon;
+	// if (anon_page->swap_file != NULL)
+	// 	file_close (anon_page->swap_file);
 }

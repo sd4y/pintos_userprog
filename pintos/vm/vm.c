@@ -3,6 +3,8 @@
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include "hash.h"
 #include "vm/vm.h"
@@ -73,11 +75,6 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		case VM_FILE:
 			page_initializer = file_backed_initializer;
 			break;
-#ifdef EFILESYS
-		case VM_PAGE_CACHE:
-			page_initializer = page_cache_initializer;
-			break;
-#endif
 		default:
 			goto err;
 		}
@@ -174,9 +171,14 @@ if (kva == NULL)
 	return frame;
 }
 
+
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
+	void *page_bottom = pg_round_down(addr);
+	if (!vm_alloc_page(VM_ANON, page_bottom, true))
+		return;
+	vm_claim_page(page_bottom);
 }
 
 /* Handle the fault on write_protected page */
@@ -190,6 +192,7 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page;
+	void *upage = pg_round_down (addr);
 
 	if (addr == NULL || is_kernel_vaddr (addr))
 		return false;
@@ -198,8 +201,18 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		return false;
 
 	page = spt_find_page (spt, addr);
-	if (page == NULL)
+	if (page == NULL){
+		if (!user)
+			return false;
+		if (addr >= f->rsp - 8 && addr < USER_STACK){
+			if ((USER_STACK - (uintptr_t) upage) > (1 << 20))
+				return false;
+
+			vm_stack_growth (addr);
+			return true;
+		}
 		return false;
+	}
 
 	if (write && !page->writable)
 		return false;
@@ -324,12 +337,14 @@ spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 }
 
 void*
-set_lazy_aux(struct file* file, off_t ofs, size_t read_bytes, size_t zero_bytes) {
+set_lazy_aux(struct file* file, off_t ofs, size_t read_bytes, size_t zero_bytes,
+		bool writable) {
 	struct lazy_aux *lazy_aux = malloc(sizeof(struct lazy_aux));
-	lazy_aux->file = file;
+	lazy_aux->file = file_reopen(file);
 	lazy_aux->ofs = ofs;
 	lazy_aux->read_bytes = read_bytes;
 	lazy_aux->zero_bytes = zero_bytes;
+	lazy_aux->writable = writable;
 
 	return lazy_aux;
 }
