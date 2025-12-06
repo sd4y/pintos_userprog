@@ -138,26 +138,25 @@ page_fault (struct intr_frame *f) {
 	write = (f->error_code & PF_W) != 0;
 	user = (f->error_code & PF_U) != 0;
 
-	// 유저 영역 주소가 아니거나(커널 영역 침범), 유저가 접근 권한이 없어서 났다면
-	if (!user || (fault_addr >= KERN_BASE && !user)) {
-		struct thread *curr = thread_current();
-		curr->exit_status = -1;
-		thread_exit(); 
-	}
-#ifdef VM
+	#ifdef VM
 	/* For project 3 and later. */
-	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
+		if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
 		return;
-#endif
-
+	#endif
+	
 	/* Count page faults. */
 	page_fault_cnt++;
+	
 
-	/* If the fault is true fault, show info and exit. */
-	printf ("Page fault at %p: %s error %s page in %s context.\n",
-			fault_addr,
-			not_present ? "not present" : "rights violation",
-			write ? "writing" : "reading",
-			user ? "user" : "kernel");
-	kill (f);
+	struct thread *curr = thread_current();
+	curr->exit_status = -1;
+	thread_exit(); 
+	
+	// /* If the fault is true fault, show info and exit. */
+	// printf ("Page fault at %p: %s error %s page in %s context.\n",
+	// 		fault_addr,
+	// 		not_present ? "not present" : "rights violation",
+	// 		write ? "writing" : "reading",
+	// 		user ? "user" : "kernel");
+	// kill (f);
 }

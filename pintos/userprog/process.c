@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <list.h>
+#include <stdlib.h>
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -21,6 +22,7 @@
 #include "intrinsic.h"
 #include "devices/timer.h"
 #include "filesys/file.h"
+#include "vm/vm.h"
 #define VM 1
 #ifdef VM
 #include "vm/vm.h"
@@ -384,42 +386,18 @@ process_exit (void) {
 	}
 
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
-	if (curr->fdt_table != NULL){
-		// 이미 닫힌 파일들을 추적하기 위한 배열
-		for (int i = 2; i < 512; i++){
-			if (curr->fdt_table != NULL) {
-				for (int i = 2; i < 512; i++) {
-					struct file *file = curr->fdt_table[i];
-					
-					// 1. 이미 비어있으면 패스
-					if (file == NULL) continue;
-
-					curr->fdt_table[i] = NULL; // 현재 칸 비우기
-
-					// 2. stdout marker인 경우 (닫을 필요 없음)
-					if (file == (struct file *)1) {
-						continue; 
-					}
-
-					// 3. 파일 닫기 (진짜 메모리 해제)
-					file_close(file);
-
-					// 4. [핵심] 나랑 같은 파일을 가리키는 다른 fd들도 미리 NULL로 밀어버림
-					// (dup2로 복사된 fd들을 처리하기 위함)
-					for (int j = i + 1; j < 512; j++) {
-						if (curr->fdt_table[j] == file) {
-							curr->fdt_table[j] = NULL; // 미리 지워둠 -> 나중에 루프가 여기 도달하면 continue됨
-						}
-					}
-				}
-				// 테이블 자체 해제
-				palloc_free_page(curr->fdt_table);
-				curr->fdt_table = NULL;
-			}
-		}
-		palloc_free_page(curr->fdt_table);
-		curr->fdt_table = NULL;
-	}
+	if (curr->fdt_table != NULL) {
+        for (int i = 2; i < 512; i++) {
+            if (curr->fdt_table[i] != NULL) {
+                // 중복 검사 루프
+                file_close(curr->fdt_table[i]); 
+                curr->fdt_table[i] = NULL;
+            }
+        }
+        // 테이블 자체 해제
+        palloc_free_page(curr->fdt_table);
+        curr->fdt_table = NULL;
+    }
 	
 	while (!list_empty(&curr->child_list)) {
 		struct list_elem *e = list_pop_front(&curr->child_list);
@@ -570,7 +548,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	goto done;
 	process_activate (thread_current ());
 
-	file_name_copy = palloc_get_page(0);
+	file_name_copy = palloc_get_page(PAL_ZERO);
 
 	if (file_name_copy == NULL)
 	{
@@ -713,10 +691,10 @@ load (const char *file_name, struct intr_frame *if_) {
 	/*
 	높은 주소 (USER_STACK = 0x47480000)
 	+---------------------------+
-	| argv[0] 문자열            | "child-read\0"
+	| argv[0] 문자열              | "child-read\0"
 	| (stack_addr[0])           |
 	+---------------------------+
-	| argv[1] 문자열            | "3\0"
+	| argv[1] 문자열              | "3\0"
 	| (stack_addr[1])           |
 	+---------------------------+
 	| padding (0~7 bytes)       | 8바이트 정렬
@@ -727,7 +705,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	+---------------------------+
 	| stack_addr[0]             | argv[0] 주소
 	+---------------------------+ ← rsi가 가리킴 (argv)
-	| NULL (가짜 반환 주소)     |
+	| NULL (가짜 반환 주소)        |
 	+---------------------------+ ← rsp
 	낮은 주소
 	*/
@@ -899,12 +877,6 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-struct aux_info {
-	struct file *file;
-	off_t ofs;
-	uint32_t read_bytes;
-	uint32_t zero_bytes;
-};
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
@@ -920,6 +892,7 @@ lazy_load_segment (struct page *page, void *aux) {
 
 	memset(page->frame->kva + new->read_bytes, 0, new->zero_bytes);
 
+	// file_close(new->file);
 	free(aux);
 
 	return true;
@@ -966,12 +939,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 			free(aux);
 			return false;
 		}
-		/* Get a page of memory. */
-		if (!vm_alloc_page_with_initializer (VM_FILE, upage, writable, lazy_load_segment, aux)){
+
+		// 페이지 예약하기
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage, writable, lazy_load_segment, aux)){
 			free(aux);
 			return false;
 		}
-		/* Advance. */
+		
+		// 변경사항 저장
 		ofs += page_read_bytes;
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
@@ -981,35 +956,39 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
-// static bool
-// setup_stack (struct intr_frame *if_) {
-// 	bool success = false;
-// 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+static bool
+setup_stack (struct intr_frame *if_) {
+	bool success = false;
+	// 스택의 첫 페이지 주소 계산 -> USER_STACK 바로 아래
+	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-// 	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-// 	 * TODO: If success, set the rsp accordingly.
-// 	 * TODO: You should mark the page is stack. */
-// 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
-// 		success = vm_claim_page (stack_bottom);
-// 		if (success)
-// 			if_->rsp = USER_STACK;
-// 	}
-
-// 	return success;
-// }
-static bool setup_stack(struct intr_frame* if_) {
-    struct page* page;
-    struct thread* cur = thread_current();
-    void* stack_bottom = (uint8_t*)USER_STACK - PGSIZE;
-    if (!vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL))
-        return false;
-    if (!vm_claim_page(stack_bottom)) {
-        page = spt_find_page(&cur->spt, stack_bottom);
-        if (page != NULL)
-            spt_remove_page(&cur->spt, page);
-        return false;
-    }
-    if_->rsp = USER_STACK;
-    return true;
+	/* TODO: Map the stack on stack_bottom and claim the page immediately.
+	 * TODO: If success, set the rsp accordingly.
+	 * TODO: You should mark the page is stack. */
+	// VM 시스템에 스택 페이지 등록
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
+		success = vm_claim_page (stack_bottom);
+		if (success)
+			// 스택 포인터 초기화
+			if_->rsp = USER_STACK;
+			// 초기 스택 포인터도 스레드 구조체에 백업
+			thread_current()->stack_pointer = USER_STACK;
+	}
+	return success;
 }
+// static bool setup_stack(struct intr_frame* if_) {
+//     struct page* page;
+//     struct thread* cur = thread_current();
+//     void* stack_bottom = (uint8_t*)USER_STACK - PGSIZE;
+//     if (!vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL))
+//         return false;
+//     if (!vm_claim_page(stack_bottom)) {
+//         page = spt_find_page(&cur->spt, stack_bottom);
+//         if (page != NULL)
+//             spt_remove_page(&cur->spt, page);
+//         return false;
+//     }
+//     if_->rsp = USER_STACK;
+//     return true;
+// }
 #endif /* VM */

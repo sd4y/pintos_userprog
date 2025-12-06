@@ -11,6 +11,9 @@
 #include "threads/synch.h"
 #include "filesys/filesys.h"
 #include "userprog/process.h"
+#include "vm/vm.h"
+#include "vm/file.h"
+#include "threads/vaddr.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -32,6 +35,9 @@ static int handler_exec(const char *cmd_line);
 int handler_dup2(int oldfd, int newfd);
 void handler_seek(int fd, off_t position);
 unsigned handler_tell(int fd);
+static void *handler_mmap(void *addr, size_t length, int writable, int fd, off_t offset);
+static void handler_munmap(void *addr);
+
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -62,6 +68,8 @@ syscall_init (void) {
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f UNUSED) {
+	// 유저 스택 포인터 백업
+	thread_current()->stack_pointer = f->rsp;
 	// TODO: Your implementation goes here.
 	int syscall_num = f->R.rax;
 	// f->R.rax : 시스템 콜 번호 (반환 값은 처리가 끝난 후 여기에 저장됨)
@@ -122,6 +130,12 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_DUP2:
 			f->R.rax = handler_dup2((int) f->R.rdi, (int) f->R.rsi);
 			break;
+		case SYS_MMAP:
+			f->R.rax = (uint64_t)handler_mmap((void *)f->R.rdi, (size_t)f->R.rsi, (int)f->R.rdx, (int)f->R.r10, (off_t)f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			handler_munmap((void *)f->R.rdi);
+			break;
 		default:
 			handler_exit(-1);
 			break;
@@ -138,6 +152,24 @@ static void check_address(const void *addr){
 }
 // || pml4_get_page(cur->pml4, addr) == NULL
 
+// 버퍼가 유효하고, 쓰기 권한이 있는지 검사하는 함수
+static void check_writable_buffer(void *buffer, unsigned size){
+	check_address(buffer);
+
+	struct thread *curr = thread_current();
+	void *ptr = buffer;
+
+	for (void *addr = pg_round_down(buffer); addr < buffer +size; addr += PGSIZE){
+		// spt에서 페이지를 읽음
+		struct page *page = spt_find_page(&curr->spt, addr);
+		
+		// 페이지가 존재하는데 쓰기 권한이 없으면 종료
+		if (page != NULL && page->writable == false){
+			handler_exit(-1);
+		}
+	}
+}
+
 static void check_string(const char *str){
 	check_address(str);
 
@@ -145,7 +177,6 @@ static void check_string(const char *str){
 		str++;
 		check_address(str);
 	}
-	
 }
 
 int give_fdt(struct file *file) {
@@ -300,6 +331,8 @@ int handler_read(int fd, void* buffer, unsigned size){
 	if(size == 0) return 0;
 	check_address(buffer);
 	check_address((char*)buffer + size -1);
+	// 쓰기 권한까지 체크
+	check_writable_buffer(buffer, size);
 	char* ptr = (char*) buffer;
 	int bytes_read = 0;
 
@@ -487,6 +520,30 @@ unsigned handler_tell(int fd){
 
 	return pos;
 }
+
+static void* handler_mmap(void* addr, size_t length, int writable, int fd, off_t offset){
+	// 오프셋이 페이지 단위로 정렬되어 있는지 확인
+	if (offset % PGSIZE != 0) return NULL;
+	
+	// fd 테이블 검증
+	if (fd < 2|| fd >= 512) return NULL;
+
+	// fd를 이용해 파일 객체 찾기
+	struct thread *cur = thread_current();
+	struct file *file = cur->fdt_table[fd];
+
+	if(file == NULL) return NULL;
+
+	if (file == (struct file *)1) return NULL;
+
+	return do_mmap(addr, length, writable, file, offset);
+}
+
+static void handler_munmap(void *addr){
+	check_address(addr);
+	do_munmap(addr);
+}
+
 // halt랑 exit
 // enum {
 // 	/* Projects 2 and later. */

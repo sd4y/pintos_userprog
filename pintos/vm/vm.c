@@ -74,11 +74,6 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		case VM_FILE:
 			page_initializer = file_backed_initializer;
 			break;
-#ifdef EFILESYS
-		case VM_PAGE_CACHE:
-			page_initializer = page_cache_initializer;
-			break;
-#endif
 		default:
 			goto err;
 		}
@@ -180,9 +175,12 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
+	void *stack_bottom = pg_round_down (addr);
+    // alloc만 수행하기
+    vm_alloc_page(VM_ANON | VM_MARKER_0, stack_bottom, true);
 }
 
-/* Handle the fault on write_protected page */
+/* Handle the fault on write_protected pag1e */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
 }
@@ -191,16 +189,39 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
-	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct thread *cur = thread_current();
+	struct supplemental_page_table *spt = &cur->spt;
 	struct page *page;
 
-	if (addr == NULL || is_kernel_vaddr (addr))
+	// 커널 영역 주소이거나 주소가 NULL이면 처리 불가
+	if (is_kernel_vaddr(addr) || addr == NULL) {
+        return false;
+    }
+	
+	// 스탯 포인터 확인
+	uintptr_t rsp;
+	// if(user){
+	// 	// 유저 모드 폴트 -> intr_frame에 저장된 rsp가 진짜임
+	// 	rsp = f->rsp;
+	// } else {
+	// 	// 커널 모드 폴트 -> intr_frame의 rsp는 쓰레기 값이므로, 백업해둔 값 사용
+	// 	rsp = thread_current()->stack_pointer;
+	// }
+	rsp = f->rsp;
+
+	// 스택 확장 판별 / 접근 주소가 USER_STACK인가? / 접근 주소가 1MB 제한 이내인가? /
+	if (addr <= (void *)USER_STACK && addr >= (void *)(USER_STACK - (1 << 20)) && addr >= (void *)(rsp - 8)){
+		if (spt_find_page(spt, addr) == NULL){
+			vm_stack_growth(addr);
+		}
+	}
+	
+	if (!not_present && write)
 		return false;
 
-	if (!not_present)
-		return false;
-
+	// 페이지 복구 및 물리 메모리 연결
 	page = spt_find_page (spt, addr);
+
 	if (page == NULL)
 		return false;
 
@@ -280,51 +301,92 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 	hash_init (&spt->page, page_hash, page_less, NULL);
 }
 
+// 헬퍼 함수 1: UNINIT 페이지 복사
+static bool
+copy_uninit_page(struct supplemental_page_table *dst, 
+                 struct page *src_page, void *upage, bool writable) {
+    vm_initializer *init = src_page->uninit.init;
+    void *aux = src_page->uninit.aux;
+
+    if (src_page->uninit.type & VM_FILE) {
+        // FILE-BACKED UNINIT
+        struct aux_info *src_aux = (struct aux_info *) aux;
+        struct aux_info *dst_aux = malloc(sizeof(struct aux_info));
+        if (dst_aux == NULL) return false;
+
+        dst_aux->file = file_reopen(src_aux->file);
+        if (dst_aux->file == NULL) {
+            free(dst_aux);
+            return false;
+        }
+        dst_aux->ofs = src_aux->ofs;
+        dst_aux->read_bytes = src_aux->read_bytes;
+        dst_aux->zero_bytes = src_aux->zero_bytes;
+
+        if (!vm_alloc_page_with_initializer(src_page->uninit.type, upage, writable, init, dst_aux)) {
+            file_close(dst_aux->file);
+            free(dst_aux);
+            return false;
+        }
+    } else {
+        // ANON UNINIT
+        if (!vm_alloc_page_with_initializer(VM_ANON, upage, writable, NULL, NULL)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 헬퍼 함수 2: PRESENT 페이지 복사
+static bool
+copy_present_page(struct supplemental_page_table *dst,
+                  struct page *src_page, void *upage, bool writable) {
+    // 자식에게는 VM_ANON으로 할당
+    if (!vm_alloc_page_with_initializer(VM_ANON, upage, writable, NULL, NULL)) {
+        return false;
+    }
+    if (!vm_claim_page(upage)) {
+        return false;
+    }
+
+    struct page *dst_page = spt_find_page(dst, upage);
+    
+    if (src_page->frame == NULL) {
+        return false;
+    }
+
+    if (dst_page->frame != NULL) {
+        memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
 /* Copy supplemental page table from src to dst */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED, struct supplemental_page_table *src UNUSED) {
-	struct hash_iterator i; // 책갈피인거임 (반복자)
+supplemental_page_table_copy(struct supplemental_page_table *dst,
+                             struct supplemental_page_table *src) {
+    struct hash_iterator i;
+    hash_first(&i, &src->page);
 
-	hash_first (&i, &src->page);
+    while (hash_next(&i)) {
+        struct hash_elem *e = hash_cur(&i);
+        struct page *src_page = hash_entry(e, struct page, hash_elem);
+        enum vm_type type = src_page->operations->type;
+        void *upage = src_page->va;
+        bool writable = src_page->writable;
 
-	while (hash_next (&i)){ // 더이상 책이 없을 때까지 계속 반복한다.
-		struct hash_elem *e = hash_cur(&i);
-		struct page *src_page = hash_entry(e, struct page, hash_elem);
-		enum vm_type type = src_page->operations->type;
-		void *upage = src_page->va;
-		bool writable = src_page->writable;
-
-		// UNINIT 페이지인 경우 (아직 물리 메모리에 안 올라온 페이지)
-		if (type == VM_UNINIT) {
-			// 부모의 초기화 정보를 그대로 가져와서 자식한테 주기
-			vm_initializer *init =src_page->uninit.init;
-			void *aux = src_page->uninit.aux;
-
-			// aux가 파일 정보를 가지고 있다면, 상황에 따라 deep copy가 필요할 수 있다.
-			// 일단 부모의 aux를 그대로 전달한다. -> 나중에 어떻게 로드해야 하는지에 대한 정보를 등록 
-			if (!vm_alloc_page_with_initializer (src_page->uninit.type, upage, writable, init, aux)){
-				return false;
-			}
-		} else { //이미 로드된 페이지인 경우
-			// 자식 프로세스에도 같은 타입의 페이지 할당을 한다. -> uninit 상태로 생성된다.
-			if(!vm_alloc_page_with_initializer (VM_ANON, upage, writable, NULL, NULL)){
+        if (type == VM_UNINIT) {
+            if (!copy_uninit_page(dst, src_page, upage, writable))
                 return false;
-            }
-			
-			// 자식의 페이지를 즉시 물리 프레임과 매칭
-			if(!vm_claim_page (upage)){ // 내부적으로 spt_find_page(dst, upage)를 수행한다.
-				return false;
-			}
-			
-			// 내용물 복사 -> 부모의 프레임 내용을 자식의 프레임으로 그대로 복사
-			struct page *dst_page = spt_find_page(dst, upage);
-
-			if (dst_page && src_page->frame) {
-                memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
-            }
-		}
-	}
-	return true;
+        } else {
+            if (!copy_present_page(dst, src_page, upage, writable))
+                return false;
+        }
+    }
+    return true;
 }
 
 // 해시 테이블의 각 요소를 삭제할 때 호출될 함수
@@ -332,13 +394,14 @@ void
 spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 	struct page *page = hash_entry (e, struct page, hash_elem);
 	struct thread *cur = thread_current ();
-
+	
 	// 페이지 테이블에서 매핑을 끊어주기 -> frame이 할당된 경우
 	if(page->frame != NULL){
 		if(cur->pml4 != NULL){
 			pml4_clear_page(cur->pml4, page->va);
 		}
 	}
+
 	// 페이지 구조체 자체를 메모리에서 해제
 	vm_dealloc_page(page);
 }

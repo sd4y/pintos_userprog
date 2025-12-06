@@ -3,6 +3,14 @@
 #include <stdbool.h>
 #include "threads/palloc.h"
 #include "hash.h"
+#include "filesys/off_t.h"
+
+struct aux_info {
+	struct file *file;
+	off_t ofs;
+	uint32_t read_bytes;
+	uint32_t zero_bytes;
+};
 
 enum vm_type {
 	/* page not initialized */
