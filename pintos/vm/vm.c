@@ -120,7 +120,7 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 
 	e = hash_delete (&spt->page, &page->hash_elem);
 	// 페이지 메모리 삭제하기
-	if(e != NULL) spt_destroy_page (e, NULL);
+	vm_dealloc_page (page);
 }
 
 /* Get the struct frame, that will be evicted. */
@@ -477,19 +477,21 @@ void
 spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 	struct page *page = hash_entry(e, struct page, hash_elem);
 	struct thread *cur = thread_current();
+	
+	destroy(page);
 
 	if (page->frame != NULL) {
 		struct thread *cur = thread_current();
+
+		// frame_table에서 제거
+		lock_acquire(&frame_table_lock);
+		list_remove(&page->frame->frame_elem);
+		lock_release(&frame_table_lock);
 
 		// 페이지 테이블에서 제거
 		if (pml4_get_page(cur->pml4, page->va)) {
 			pml4_clear_page(cur->pml4, page->va);
 		}
-		
-		// frame_table에서 제거
-		lock_acquire(&frame_table_lock);
-		list_remove(&page->frame->frame_elem);
-		lock_release(&frame_table_lock);
 		
 		// 프레임 메타데이터 해제
 		palloc_free_page(page->frame->kva);
@@ -498,7 +500,6 @@ spt_destroy_page (struct hash_elem *e, void *aux UNUSED) {
 		page->frame = NULL;
 	}
 
-	destroy(page);
 	free(page);
 }
 
