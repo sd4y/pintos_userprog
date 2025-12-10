@@ -123,7 +123,7 @@ file_backed_swap_out (struct page *page) {
     if (pml4_is_dirty(curr->pml4, page->va)) {
         bool lock_held = lock_held_by_current_thread(&filesys_lock);
         if (!lock_held) lock_acquire(&filesys_lock);
-        file_write_at(file_page->file, page->frame->kva, file_page->read_bytes + file_page->zero_bytes, file_page->ofs);
+        file_write_at(file_page->file, page->frame->kva, file_page->read_bytes, file_page->ofs);
         if (!lock_held) lock_release(&filesys_lock);
         
         pml4_set_dirty(curr->pml4, page->va, false);
@@ -147,7 +147,7 @@ file_backed_destroy (struct page *page) {
         bool lock_held = lock_held_by_current_thread(&filesys_lock);
         if (!lock_held) lock_acquire(&filesys_lock);
 
-        int bytes_written = file_write_at(file_page->file, page->frame->kva, file_page->read_bytes + file_page->zero_bytes, file_page->ofs);
+        int bytes_written = file_write_at(file_page->file, page->frame->kva, file_page->read_bytes, file_page->ofs);
 
         if (!lock_held) lock_release(&filesys_lock);
     }
